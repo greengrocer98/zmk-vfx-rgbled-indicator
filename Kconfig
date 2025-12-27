@@ -1,0 +1,62 @@
+config VFX_RGBLED_INDICATOR
+    bool "Enable LED indicators for showing battery and connection status"
+
+if VFX_RGBLED_INDICATOR
+
+config LED
+    default y
+
+config PWM
+    default y
+
+config VFX_LDO_PIN
+    bool "LDO Control Pin"
+    help
+      GPIO pin used to control the LDO for powering the LEDs.
+      This pin will be set high when the LED animations are active,
+      and set low when they are not, to save power.
+    default n
+
+config VFX_CHRG_PIN
+    bool "Charging Status Pin"
+    help
+      GPIO pin used to monitor the charging status of the battery.
+      This pin should be connected to the charging IC's status output,
+      which goes high when charging is in progress and low when charging is complete.
+    default n
+
+config VFX_BATTERY_LEVEL_HIGH
+    int "High battery level percentage"
+    default 80
+
+config VFX_BATTERY_LEVEL_MID
+    int "Low battery level percentage"
+    default 50
+
+config VFX_BATTERY_LEVEL_LOW
+    int "Low battery level percentage"
+    default 20
+
+config VFX_BATTERY_LEVEL_CRITICAL
+    int "Critical battery level percentage"
+    default 5
+
+config VFX_CPI_LEVEL_ULTRA
+    int "High CPI level"
+    default 3000
+
+config VFX_CPI_LEVEL_HIGH
+    int "High CPI level"
+    default 2200
+
+config VFX_CPI_LEVEL_MID
+    int "Mid CPI level"
+    default 800
+
+endif # VFX_RGBLED_INDICATOR
+
+DT_COMPAT_ZMK_BEHAVIOR_VFX_RGBLED_INDICATOR := zmk,behavior-vfx-rgbled-indicator
+
+config ZMK_BEHAVIOR_VFX_RGBLED_INDICATOR
+    bool
+    default $(dt_compat_enabled,$(DT_COMPAT_ZMK_BEHAVIOR_VFX_RGBLED_INDICATOR))
