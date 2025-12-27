@@ -17,7 +17,7 @@
 
 #include <zmk_vfx_rgbled_indicator/indicator.h>
 
-#if IS_ENABLED(CONFIG_PAW3395_REPORT_CPI)
+#if IS_ENABLED(CONFIG_REPORT_CPI)
 #include <pixart.h>
 extern struct k_msgq cpi_msgq;
 static uint16_t cpi_cycle_value;
@@ -84,7 +84,7 @@ struct anim_ctx
 static struct anim_ctx anim;
 static enum animation_state fmt_state = IDLE;
 static enum animation_event fmt_event = STOP_ANIMATION;
-#if IS_ENABLED(CONFIG_PAW3395_REPORT_CPI)
+#if IS_ENABLED(CONFIG_REPORT_CPI)
 static struct k_thread msgq_thread_data;
 K_THREAD_STACK_DEFINE(msgq_thread_stack, 1024);
 #endif
@@ -166,7 +166,7 @@ static void battery_status_animation(atomic_t *generation)
 #endif
 }
 
-#ifdef CONFIG_PAW3395_REPORT_CPI
+#ifdef CONFIG_REPORT_CPI
 static void cpi_status_animation(atomic_t *generation)
 {
     uint16_t cpi = cpi_cycle_value;
@@ -275,7 +275,7 @@ void handle_connection_status_event(atomic_t *generation)
     }
 }
 
-#ifdef CONFIG_PAW3395_REPORT_CPI
+#ifdef CONFIG_REPORT_CPI
 void handle_cpi_status_event(atomic_t *generation)
 {
     switch (fmt_state)
@@ -314,7 +314,7 @@ static void anim_handler(struct k_work *work)
         handle_connection_status_event(&gen);
         break;
     case START_CPI:
-#ifdef CONFIG_PAW3395_REPORT_CPI
+#ifdef CONFIG_REPORT_CPI
         handle_cpi_status_event(&gen);
 #endif
         break;
@@ -376,7 +376,7 @@ void indicate_connection()
     k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
 }
 
-#if IS_ENABLED(CONFIG_PAW3395_REPORT_CPI)
+#if IS_ENABLED(CONFIG_REPORT_CPI)
 void cpi_consumer_thread(void)
 {
 
@@ -487,7 +487,7 @@ static int init_animation(const struct device *dev)
     k_work_init_delayable(&anim.work, anim_handler);
     k_work_schedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
 
-#if IS_ENABLED(CONFIG_PAW3395_REPORT_CPI)
+#if IS_ENABLED(CONFIG_REPORT_CPI)
     k_thread_create(&msgq_thread_data, msgq_thread_stack,
                     K_THREAD_STACK_SIZEOF(msgq_thread_stack),
                     cpi_consumer_thread,
