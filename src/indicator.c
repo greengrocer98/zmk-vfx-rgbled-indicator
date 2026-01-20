@@ -17,10 +17,9 @@
 
 #include <zmk_vfx_rgbled_indicator/indicator.h>
 
-#if IS_ENABLED(CONFIG_REPORT_CPI)
-#include <pixart.h>
-extern struct k_msgq cpi_msgq;
-static uint16_t cpi_cycle_value;
+#if IS_ENABLED(CONFIG_REPORT_ATTR)
+extern struct k_msgq attr_msgq;
+static struct attr_report report;
 #endif
 
 #define LED_COUNT 3
@@ -71,7 +70,7 @@ enum animation_event
     START_CONNECTION_STATUS,
     START_CHARGING,
     START_DISCHARGED,
-    START_CPI,
+    START_ATTR_REPORT,
     STOP_ANIMATION,
 };
 
@@ -84,7 +83,7 @@ struct anim_ctx
 static struct anim_ctx anim;
 static enum animation_state fmt_state = IDLE;
 static enum animation_event fmt_event = STOP_ANIMATION;
-#if IS_ENABLED(CONFIG_REPORT_CPI)
+#if IS_ENABLED(CONFIG_REPORT_ATTR)
 static struct k_thread msgq_thread_data;
 K_THREAD_STACK_DEFINE(msgq_thread_stack, 1024);
 #endif
@@ -166,10 +165,10 @@ static void battery_status_animation(atomic_t *generation)
 #endif
 }
 
-#ifdef CONFIG_REPORT_CPI
+#ifdef CONFIG_REPORT_ATTR
 static void cpi_status_animation(atomic_t *generation)
 {
-    uint16_t cpi = cpi_cycle_value;
+    uint16_t cpi = report.val;
 #ifdef CONFIG_VFX_LDO_PIN
     gpio_pin_set_dt(&ldo_pin, 1);
 #endif
@@ -275,8 +274,8 @@ void handle_connection_status_event(atomic_t *generation)
     }
 }
 
-#ifdef CONFIG_REPORT_CPI
-void handle_cpi_status_event(atomic_t *generation)
+#ifdef CONFIG_REPORT_ATTR
+void handle_attr_report_status_event(atomic_t *generation)
 {
     switch (fmt_state)
     {
@@ -313,9 +312,9 @@ static void anim_handler(struct k_work *work)
     case START_CONNECTION_STATUS:
         handle_connection_status_event(&gen);
         break;
-    case START_CPI:
-#ifdef CONFIG_REPORT_CPI
-        handle_cpi_status_event(&gen);
+#ifdef CONFIG_REPORT_ATTR
+    case START_ATTR_REPORT:
+        handle_attr_report_status_event(&gen);
 #endif
         break;
     case START_CHARGING:
@@ -376,15 +375,18 @@ void indicate_connection()
     k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
 }
 
-#if IS_ENABLED(CONFIG_REPORT_CPI)
-void cpi_consumer_thread(void)
+#if IS_ENABLED(CONFIG_REPORT_ATTR)
+void attr_report_consumer_thread(void *p1, void *p2, void *p3)
 {
-
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+    
     while (1)
     {
-        k_msgq_get(&cpi_msgq, &cpi_cycle_value, K_FOREVER);
+        k_msgq_get(&attr_msgq, &report, K_FOREVER);
         atomic_inc(&anim.generation);
-        fmt_event = START_CPI;
+        fmt_event = START_ATTR_REPORT;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
     }
 }
@@ -471,7 +473,7 @@ static int chrg_init()
 }
 #endif
 
-static int init_animation(const struct device *dev)
+static int init_animation(void)
 {
     k_work_queue_init(&animation_work_q);
 
@@ -487,10 +489,10 @@ static int init_animation(const struct device *dev)
     k_work_init_delayable(&anim.work, anim_handler);
     k_work_schedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
 
-#if IS_ENABLED(CONFIG_REPORT_CPI)
+#if IS_ENABLED(CONFIG_REPORT_ATTR)
     k_thread_create(&msgq_thread_data, msgq_thread_stack,
                     K_THREAD_STACK_SIZEOF(msgq_thread_stack),
-                    cpi_consumer_thread,
+                    attr_report_consumer_thread,
                     NULL, NULL, NULL,
                     K_LOWEST_APPLICATION_THREAD_PRIO, 0, K_NO_WAIT);
 #endif
