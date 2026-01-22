@@ -77,12 +77,13 @@ enum animation_event
 struct anim_ctx
 {
     struct k_work_delayable work;
-    atomic_t generation;
+    atomic_t next_gen;
+    uint32_t current_gen;
 };
 
 static struct anim_ctx anim;
-static enum animation_state fmt_state = IDLE;
-static enum animation_event fmt_event = STOP_ANIMATION;
+static enum animation_state fmt_state;
+static enum animation_event fmt_event;
 #if IS_ENABLED(CONFIG_REPORT_ATTR)
 static struct k_thread msgq_thread_data;
 K_THREAD_STACK_DEFINE(msgq_thread_stack, 1024);
@@ -100,18 +101,15 @@ static void leds_off()
     }
 }
 
-static void pwm_leds_bitmask(uint8_t mask, uint16_t duration_ms, atomic_t *generation)
+static void pwm_leds_bitmask(uint8_t mask, uint16_t step_period_ms)
 {
-    uint16_t steps = duration_ms / 2 / PWM_STEP_PERIOD_MS;
-    uint16_t brightness;
-    for (int step = 0; step <= steps; step++)
+    for (int brightness = 0; brightness <= LED_BRIGHTNESS_MAX; brightness++)
     {
-        if (*generation != atomic_get(&anim.generation))
+        if (anim.current_gen != atomic_get(&anim.next_gen))
         {
             leds_off();
             return;
         }
-        brightness = (step * LED_BRIGHTNESS_MAX) / steps;
         for (int i = 0; i < LED_COUNT; i++)
         {
             if (mask & (1 << i))
@@ -119,16 +117,15 @@ static void pwm_leds_bitmask(uint8_t mask, uint16_t duration_ms, atomic_t *gener
                 led_set_brightness(led_dev, led_idx[i], brightness);
             }
         }
-        k_sleep(K_MSEC(PWM_STEP_PERIOD_MS));
+        k_sleep(K_MSEC(step_period_ms));
     }
-    for (int step = steps - 1; step >= 0; step--)
+    for (int brightness = LED_BRIGHTNESS_MAX - 1; brightness >= 0; brightness--)
     {
-        if (*generation != atomic_get(&anim.generation))
+        if (anim.current_gen != atomic_get(&anim.next_gen))
         {
             leds_off();
             return;
         }
-        brightness = (step * LED_BRIGHTNESS_MAX) / steps;
         for (int i = 0; i < LED_COUNT; i++)
         {
             if (mask & (1 << i))
@@ -136,12 +133,12 @@ static void pwm_leds_bitmask(uint8_t mask, uint16_t duration_ms, atomic_t *gener
                 led_set_brightness(led_dev, led_idx[i], brightness);
             }
         }
-        k_sleep(K_MSEC(PWM_STEP_PERIOD_MS));
+        k_sleep(K_MSEC(step_period_ms));
     }
     leds_off();
 }
 
-static void battery_status_animation(atomic_t *generation)
+static void battery_status_animation()
 {
     uint8_t battery_level = zmk_battery_state_of_charge();
 #ifdef CONFIG_VFX_LDO_PIN
@@ -150,23 +147,29 @@ static void battery_status_animation(atomic_t *generation)
     LOG_DBG("Battery level: %d%%", battery_level);
     if (battery_level > CONFIG_VFX_BATTERY_LEVEL_HIGH)
     {
-        pwm_leds_bitmask(0b010, 2000, generation);
+        pwm_leds_bitmask(0b010, 5);
     }
     else if (battery_level > CONFIG_VFX_BATTERY_LEVEL_MID)
     {
-        pwm_leds_bitmask(0b011, 2000, generation);
+        pwm_leds_bitmask(0b011, 5);
     }
-    else
+    else if (battery_level > CONFIG_VFX_BATTERY_LEVEL_LOW)
     {
-        pwm_leds_bitmask(0b001, 2000, generation);
+        pwm_leds_bitmask(0b001, 5);
     }
 #ifdef CONFIG_VFX_LDO_PIN
     gpio_pin_set_dt(&ldo_pin, 0);
 #endif
+    if (fmt_state == IDLE && battery_level <= CONFIG_VFX_BATTERY_LEVEL_LOW)
+    {
+        atomic_inc(&anim.next_gen);
+        fmt_event = START_DISCHARGED;
+        k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
+    }
 }
 
 #ifdef CONFIG_REPORT_ATTR
-static void cpi_status_animation(atomic_t *generation)
+static void cpi_status_animation()
 {
     uint16_t cpi = report.val;
 #ifdef CONFIG_VFX_LDO_PIN
@@ -174,100 +177,147 @@ static void cpi_status_animation(atomic_t *generation)
 #endif
     if (cpi > CONFIG_VFX_CPI_LEVEL_ULTRA)
     {
-        pwm_leds_bitmask(0b101, 2000, generation);
+        pwm_leds_bitmask(0b101, 5);
     }
     else if (cpi > CONFIG_VFX_CPI_LEVEL_HIGH)
     {
-        pwm_leds_bitmask(0b010, 2000, generation);
+        pwm_leds_bitmask(0b010, 5);
     }
     else if (cpi > CONFIG_VFX_CPI_LEVEL_MID)
     {
-        pwm_leds_bitmask(0b011, 2000, generation);
+        pwm_leds_bitmask(0b011, 5);
     }
     else
     {
-        pwm_leds_bitmask(0b001, 2000, generation);
+        pwm_leds_bitmask(0b001, 5);
     }
 #ifdef CONFIG_VFX_LDO_PIN
     gpio_pin_set_dt(&ldo_pin, 0);
 #endif
 }
+
+static void power_mode_animation()
+{
+    uint16_t power_mode = report.val;
+#ifdef CONFIG_VFX_LDO_PIN
+    gpio_pin_set_dt(&ldo_pin, 1);
+#endif
+    pwm_leds_bitmask(0b111, 3); // prefix animation
+    switch (power_mode)
+    {
+    case 0:
+        pwm_leds_bitmask(0b101, 3);
+        break;
+    case 1:
+        pwm_leds_bitmask(0b011, 3);
+        break;
+    case 2:
+        pwm_leds_bitmask(0b100, 3);
+        break;
+    default:
+        pwm_leds_bitmask(0b001, 3);
+        break;
+    }
+#ifdef CONFIG_VFX_LDO_PIN
+    gpio_pin_set_dt(&ldo_pin, 0);
+#endif
+}
+
+static void attr_animation()
+{
+    uint8_t attr = report.attr;
+    switch (attr)
+    {
+    case 0:
+        cpi_status_animation();
+        break;
+    case 1:
+        power_mode_animation();
+        break;
+    default:
+        break;
+    }
+}
 #endif
 
-static void discharged_animation(atomic_t *generation)
+static void discharged_animation()
 {
 #ifdef CONFIG_VFX_LDO_PIN
     gpio_pin_set_dt(&ldo_pin, 1);
 #endif
     for (;;)
     {
-        if (*generation != atomic_get(&anim.generation))
+        if (anim.current_gen != atomic_get(&anim.next_gen))
         {
 #ifdef CONFIG_VFX_LDO_PIN
             gpio_pin_set_dt(&ldo_pin, 0);
 #endif
             return;
         }
-        pwm_leds_bitmask(0b001, 2000, generation);
+        pwm_leds_bitmask(0b001, 5);
     }
 }
 
-static void charging_animation(atomic_t *generation)
+static void charging_animation()
 {
 #ifdef CONFIG_VFX_LDO_PIN
     gpio_pin_set_dt(&ldo_pin, 1);
 #endif
     for (;;)
     {
-        if (*generation != atomic_get(&anim.generation))
+        if (anim.current_gen != atomic_get(&anim.next_gen))
         {
 #ifdef CONFIG_VFX_LDO_PIN
             gpio_pin_set_dt(&ldo_pin, 0);
 #endif
             return;
         }
-        pwm_leds_bitmask(0b011, 2000, generation);
+        pwm_leds_bitmask(0b011, 20);
     }
 }
 
-void handle_battery_status_event(atomic_t *generation)
+void handle_battery_status_event()
 {
     switch (fmt_state)
     {
     case CHARGING:
-        battery_status_animation(generation);
+        battery_status_animation();
+        atomic_inc(&anim.next_gen);
         fmt_event = START_CHARGING;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
         break;
     case DISCHARGED:
-        battery_status_animation(generation);
+        battery_status_animation();
+        atomic_inc(&anim.next_gen);
         fmt_event = START_DISCHARGED;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
         break;
     case IDLE:
-        battery_status_animation(generation);
+        battery_status_animation();
         break;
     default:
         break;
     }
 }
 
-void handle_connection_status_event(atomic_t *generation)
+void handle_connection_status_event()
 {
     switch (fmt_state)
     {
     case CHARGING:
-        battery_status_animation(generation);
+        battery_status_animation();
+        atomic_inc(&anim.next_gen);
         fmt_event = START_CHARGING;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
         break;
     case DISCHARGED:
-        battery_status_animation(generation);
+        battery_status_animation();
+        atomic_inc(&anim.next_gen);
         fmt_event = START_DISCHARGED;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
         break;
     case IDLE:
-        battery_status_animation(generation);
+        battery_status_animation();
         break;
     default:
         break;
@@ -275,22 +325,24 @@ void handle_connection_status_event(atomic_t *generation)
 }
 
 #ifdef CONFIG_REPORT_ATTR
-void handle_attr_report_status_event(atomic_t *generation)
+void handle_attr_report_status_event()
 {
     switch (fmt_state)
     {
     case CHARGING:
-        cpi_status_animation(generation);
+        attr_animation();
+        atomic_inc(&anim.next_gen);
         fmt_event = START_CHARGING;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
         break;
     case DISCHARGED:
-        cpi_status_animation(generation);
+        attr_animation();
+        atomic_inc(&anim.next_gen);
         fmt_event = START_DISCHARGED;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
         break;
     case IDLE:
-        cpi_status_animation(generation);
+        attr_animation();
         break;
     default:
         break;
@@ -302,28 +354,28 @@ static void anim_handler(struct k_work *work)
 {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     struct anim_ctx *ctx = CONTAINER_OF(dwork, struct anim_ctx, work);
-    atomic_t gen = atomic_get(&ctx->generation);
+    ctx->current_gen = atomic_get(&ctx->next_gen);
 
     switch (fmt_event)
     {
     case START_BATTERY_STATUS:
-        handle_battery_status_event(&gen);
+        handle_battery_status_event();
         break;
     case START_CONNECTION_STATUS:
-        handle_connection_status_event(&gen);
+        handle_connection_status_event();
         break;
 #ifdef CONFIG_REPORT_ATTR
     case START_ATTR_REPORT:
-        handle_attr_report_status_event(&gen);
+        handle_attr_report_status_event();
 #endif
         break;
     case START_CHARGING:
         fmt_state = CHARGING;
-        charging_animation(&gen);
+        charging_animation();
         break;
     case START_DISCHARGED:
         fmt_state = DISCHARGED;
-        discharged_animation(&gen);
+        discharged_animation();
         break;
     case STOP_ANIMATION:
         leds_off();
@@ -350,9 +402,9 @@ int battery_listener(const zmk_event_t *eh)
 {
     uint8_t battery_level = as_zmk_battery_state_changed(eh)->state_of_charge;
 
-    if (fmt_state != CHARGING && battery_level <= CONFIG_VFX_BATTERY_LEVEL_CRITICAL)
+    if (fmt_state == IDLE && battery_level <= CONFIG_VFX_BATTERY_LEVEL_LOW)
     {
-        atomic_inc(&anim.generation);
+        atomic_inc(&anim.next_gen);
         fmt_event = START_DISCHARGED;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
     }
@@ -363,14 +415,14 @@ ZMK_SUBSCRIPTION(battery_state, zmk_battery_state_changed);
 
 void indicate_battery()
 {
-    atomic_inc(&anim.generation);
+    atomic_inc(&anim.next_gen);
     fmt_event = START_BATTERY_STATUS;
     k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
 }
 
 void indicate_connection()
 {
-    atomic_inc(&anim.generation);
+    atomic_inc(&anim.next_gen);
     fmt_event = START_CONNECTION_STATUS;
     k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
 }
@@ -385,7 +437,7 @@ void attr_report_consumer_thread(void *p1, void *p2, void *p3)
     while (1)
     {
         k_msgq_get(&attr_msgq, &report, K_FOREVER);
-        atomic_inc(&anim.generation);
+        atomic_inc(&anim.next_gen);
         fmt_event = START_ATTR_REPORT;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
     }
@@ -418,21 +470,21 @@ static void chrg_changed(const struct device *dev,
                          struct gpio_callback *cb,
                          uint32_t pins)
 {
-    k_sleep(K_MSEC(50)); // Debounce delay
+    k_sleep(K_MSEC(10)); // Debounce delay
     bool charging = gpio_pin_get_dt(&chrg_pin);
     LOG_DBG("CHRG pin changed, charging: %d", charging);
 
     if (charging)
     {
         LOG_DBG("Charging started");
-        atomic_inc(&anim.generation);
+        atomic_inc(&anim.next_gen);
         fmt_event = START_CHARGING;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
     }
     else
     {
         LOG_DBG("Charging finished");
-        atomic_inc(&anim.generation);
+        atomic_inc(&anim.next_gen);
         fmt_event = STOP_ANIMATION;
         k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
     }
@@ -485,7 +537,10 @@ static int init_animation(void)
     ldo_init(&ldo_pin);
 #endif
 
-    atomic_set(&anim.generation, 0);
+    atomic_set(&anim.next_gen, 0);
+    anim.current_gen = 0;
+    fmt_state = IDLE;
+    fmt_event = STOP_ANIMATION;
     k_work_init_delayable(&anim.work, anim_handler);
     k_work_schedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
 
@@ -498,8 +553,16 @@ static int init_animation(void)
 #endif
 
 #ifdef CONFIG_VFX_CHRG_PIN
-    k_sleep(K_MSEC(1000)); // Allow time for pin to stabilize
+    k_sleep(K_MSEC(2500)); // Wait for attr set animation
     chrg_init(&chrg_pin);
+
+    bool charging = gpio_pin_get_dt(&chrg_pin);
+    if (charging)
+    {
+        atomic_inc(&anim.next_gen);
+        fmt_event = START_CHARGING;
+        k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
+    }
 #endif
 
     return 0;
