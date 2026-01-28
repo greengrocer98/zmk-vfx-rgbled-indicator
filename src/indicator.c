@@ -553,7 +553,6 @@ static int init_animation(void)
 #endif
 
 #ifdef CONFIG_VFX_CHRG_PIN
-    k_sleep(K_MSEC(2500)); // Wait for attr set animation
     chrg_init(&chrg_pin);
 
     bool charging = gpio_pin_get_dt(&chrg_pin);
@@ -561,7 +560,7 @@ static int init_animation(void)
     {
         atomic_inc(&anim.next_gen);
         fmt_event = START_CHARGING;
-        k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_NO_WAIT);
+        k_work_reschedule_for_queue(&animation_work_q, &anim.work, K_MSEC(1500));
     }
 #endif
 
